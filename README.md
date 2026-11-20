@@ -22,16 +22,35 @@
 
 ## ⚡ What is SupoClip Unlocked?
 
-SupoClip Unlocked is a fully featured, self-hostable AI video clipping platform. Give it any long video or **ongoing live stream** (YouTube, Twitch, Kick, or local file upload), and it automatically:
-- 🔴 **Captures & Records Live Streams** directly from YouTube Live, Twitch, and Kick using configurable recording windows (5m, 10m, 15m, 30m, 45m, 60m).
-- 🎙️ **Transcribes with Word-Level Precision** using AssemblyAI or local Whisper.
-- 🧠 **Extracts Viral Moments** using Google Gemini (e.g. Gemini 3.1 Flash Lite), OpenAI, Claude, or local Ollama with zero reasoning stalls.
-- 📊 **Scores Virality** with breakdown metrics (Hook, Engagement, Value, Shareability) and punchy AI hook headlines.
-- 📱 **Reframes to 9:16 Vertical** with intelligent face detection to keep speakers centered.
-- 💬 **Generates Animated Captions** with word-by-word highlight animations and customizable font presets.
-- 🎞️ **Adds AI B-Roll** using free Pexels stock footage overlays.
-- ✂️ **Built-in Studio Editor** to trim, split, re-caption, and export directly.
-- 🔓 **Zero Billing Gates**: No Stripe required, no minute limits, no paywalls.
+SupoClip Unlocked is a fully featured, self-hostable AI video clipping platform. Give it any long video or **ongoing live stream** (YouTube, Twitch, Kick, or local file upload), and it automatically generates ready-to-publish short-form videos with face detection, animated subtitles, virality scores, and stock B-roll.
+
+---
+
+## ✨ Added & Unlocked Features
+
+This repository includes several major enhancements added to the original pipeline:
+
+### 1. 🔴 Live Stream Clipping (YouTube, Twitch, Kick)
+- **Live Stream Input**: Paste any live stream URL directly (YouTube `/live/`, Twitch channels, Kick channels).
+- **Auto-Detection**: The UI immediately detects live streams and switches into **Live Mode** with a dedicated duration picker.
+- **Recording Windows**: Choose how much of the live stream to capture: **5m, 10m, 15m, 30m, 45m, or 60m**.
+- **Robust Pipeline Integration**: The captured stream is cleanly remuxed to standard MP4 and piped directly through the complete clipping engine:
+  - AssemblyAI or local Whisper word-level transcription
+  - AI highlight selection & hook headline creation
+  - Virality breakdown scoring (Hook, Engagement, Value, Shareability)
+  - 9:16 vertical face-tracking & reframing
+  - Animated, word-synced subtitles
+  - Built-in Studio editor for trimming and adjustments
+- **Retry Preservation**: If any stage ever needs a retry, the task retains `is_live` and `live_duration_seconds` parameters automatically.
+
+### 2. 🔓 100% Free & Unlocked (No Stripe / No Paywalls)
+- **Zero Billing Gates**: All Stripe checks, subscription requirements, minute allowances, and paywalls are disabled.
+- **Unlimited Usage**: Self-host and generate as many clips as your hardware can process.
+- **No Credit Card or Stripe Account Needed**: Deploy and start creating immediately without setting up payment gateways.
+
+### 3. 🚀 High-Speed Gemini Optimization & Auto-Fallback
+- **Instant AI Analysis**: Gemini 3 preview models previously stalled on large structured prompts due to default extended reasoning loops. By passing `thinking_budget=0` and running direct client calls, AI highlight detection finishes in **under 4 seconds** (down from 10+ minute timeouts).
+- **Automatic Quota Fallback**: If your primary Gemini model encounters a `429 RESOURCE_EXHAUSTED` (free-tier daily quota limit) or temporary `503`, the pipeline automatically cascades through fallback models (`gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-flash-lite-latest`) without failing the video job.
 
 ---
 
