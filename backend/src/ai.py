@@ -3,8 +3,9 @@ AI-related functions for transcript analysis with enhanced precision and viralit
 """
 
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Literal
+from typing import List, Dict, Any, Optional, Literal, Type, TypeVar
 import asyncio
+import json
 import logging
 import math
 import random
@@ -28,6 +29,8 @@ from .config import Config, get_config
 from .clip_duration import clip_duration
 from .runtime_settings import apply_settings_to_process_env
 from .workflows.prompts import instructions_block
+
+_T = TypeVar("_T", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
@@ -1132,12 +1135,107 @@ def _is_transient_model_error(error: Exception) -> bool:
     return False
 
 
+class _AgentResult:
+    """Thin wrapper so callers can use result.output the same as pydantic-ai returns."""
+
+    def __init__(self, output: Any) -> None:
+        self.output = output
+
+
+async def _run_google_direct(
+    prompt: str,
+    system_prompt: str,
+    output_type: Type[_T],
+    model_name: str,
+    api_key: str,
+    timeout_seconds: float,
+) -> _T:
+    """Call Google Gemini with plain-text output and parse the JSON response manually.
+
+    pydantic-ai structured output (response_schema / tool-call mode) hangs
+    indefinitely on some Google preview models.  Using plain text + explicit
+    JSON instructions in the prompt avoids the stall while keeping the same
+    schema validation on the parsed result.
+    """
+    from google import genai as _google_genai  # local import to stay optional
+    from google.genai import types as _google_genai_types
+
+    full_prompt = (
+        f"{system_prompt}\n\n"
+        "IMPORTANT: Respond ONLY with valid JSON. "
+        "Do not include markdown code blocks, prose, or any text outside the JSON object.\n\n"
+        f"{prompt}"
+    )
+    # Candidate models to try in order when the requested model hits quota (429) or temporary unavailability (503/404).
+    candidate_models = [model_name] + [
+        m for m in ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3-flash-preview")
+        if m != model_name
+    ]
+
+    client = _google_genai.Client(api_key=api_key)
+    # Explicitly disable extended thinking on preview models (e.g. gemini-3-flash-preview)
+    # where deep reasoning loops cause multi-minute hangs on structured tasks.
+    gen_config = _google_genai_types.GenerateContentConfig(
+        temperature=0.1,
+        thinking_config=_google_genai_types.ThinkingConfig(thinking_budget=0),
+    )
+    last_error: Exception = RuntimeError("No attempt made")
+    for current_model in candidate_models:
+        for attempt in range(1, TRANSCRIPT_ANALYSIS_MAX_ATTEMPTS + 1):
+            try:
+                async with asyncio.timeout(timeout_seconds):
+                    response = await client.aio.models.generate_content(
+                        model=current_model,
+                        contents=full_prompt,
+                        config=gen_config,
+                    )
+                text = (response.text or "").strip()
+                # Strip markdown code fences if the model wrapped the JSON anyway.
+                if text.startswith("```"):
+                    text = re.sub(r"^```[a-z]*\n?", "", text)
+                    text = re.sub(r"\n?```$", "", text.strip())
+                data = json.loads(text)
+                return output_type.model_validate(data)
+            except TimeoutError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                err_str = str(exc)
+                # If quota exhausted (429) or not found (404), switch to the next fallback model immediately.
+                if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str or "404" in err_str:
+                    logger.warning(
+                        "Google model %s hit quota or unavailable (%s); falling back to alternative",
+                        current_model,
+                        type(exc).__name__,
+                    )
+                    break
+                if attempt == TRANSCRIPT_ANALYSIS_MAX_ATTEMPTS:
+                    break
+                delay = 5 * 2 ** (attempt - 1) + random.uniform(0, 1)
+                logger.warning(
+                    "Google direct call on %s attempt %d/%d failed (%s); retrying in %.1fs",
+                    current_model,
+                    attempt,
+                    TRANSCRIPT_ANALYSIS_MAX_ATTEMPTS,
+                    type(exc).__name__,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+    raise last_error
+
+
 async def _run_transcript_analysis(
     agent: Agent,
     prompt: str,
     timeout_seconds: Optional[float] = None,
+    *,
+    system_prompt: Optional[str] = None,
 ) -> Any:
     """Retry temporary failures on the configured model within one overall budget.
+
+    For Google providers, pydantic-ai's structured output mode hangs
+    indefinitely.  Those calls are routed to :func:`_run_google_direct` which
+    asks for plain-text JSON and validates manually.
 
     Agent output retries handle schema repair, not HTTP failures. Retrying only
     the model step preserves completed downloads and transcription. SDK retries
@@ -1145,6 +1243,65 @@ async def _run_transcript_analysis(
     """
     if timeout_seconds is None:
         timeout_seconds = TRANSCRIPT_ANALYSIS_TIMEOUT_SECONDS
+
+    # Route Google provider calls through the direct genai path to avoid the
+    # structured-output hang that affects preview models.
+    runtime_config = get_config()
+    model_obj = getattr(agent, "model", None)
+    is_google = getattr(model_obj, "system", None) == "google"
+    model_id = getattr(model_obj, "model_name", None) if is_google else None
+    if not is_google:
+        provider, cfg_model_id = _split_llm_name(runtime_config.llm)
+        if provider in ("google", "google-gla"):
+            is_google = True
+            model_id = cfg_model_id
+
+    if is_google and runtime_config.google_api_key and model_id:
+        # Determine the output schema from the agent's configured output_type.
+        output_type_raw = getattr(agent, "_output_type", None)
+        # pydantic-ai wraps the type in NativeOutput for some providers.
+        if isinstance(output_type_raw, NativeOutput):
+            output_type_raw = output_type_raw.output_type
+        if output_type_raw is None or not (
+            isinstance(output_type_raw, type) and issubclass(output_type_raw, BaseModel)
+        ):
+            # Fall back to pydantic-ai path when we cannot determine schema.
+            logger.warning(
+                "Cannot determine output schema for Google direct path; "
+                "falling back to pydantic-ai agent.run()"
+            )
+        else:
+            # Reconstruct the system prompt if not provided by the caller.
+            sp = system_prompt or (
+                getattr(agent, "_system_prompts", None) and
+                "\n".join(str(p) for p in agent._system_prompts)  # type: ignore[union-attr]
+            ) or ""
+            try:
+                async with asyncio.timeout(timeout_seconds):
+                    output = await _run_google_direct(
+                        prompt=prompt,
+                        system_prompt=sp,
+                        output_type=output_type_raw,
+                        model_name=model_id,
+                        api_key=runtime_config.google_api_key,
+                        timeout_seconds=timeout_seconds,
+                    )
+                logger.info(
+                    "AI analysis completed via Google direct path (model=%s)", model_id
+                )
+                return _AgentResult(output)
+            except TimeoutError:
+                logger.error("AI analysis exceeded the %ss time budget", timeout_seconds)
+                raise RuntimeError(
+                    "The AI analysis service took too long to respond. Please try again shortly."
+                ) from None
+            except Exception as exc:
+                logger.error(
+                    "Google direct AI analysis failed (%s): %s", type(exc).__name__, exc
+                )
+                raise RuntimeError(f"Transcript analysis failed: {exc}") from exc
+
+    # --- Standard pydantic-ai path for all other providers ---
     try:
         async with asyncio.timeout(timeout_seconds):
             for attempt in range(1, TRANSCRIPT_ANALYSIS_MAX_ATTEMPTS + 1):

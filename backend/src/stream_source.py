@@ -177,7 +177,7 @@ def detect_stream_source(url: str) -> tuple[str, str, str]:
         if m := _TWITCH_CHANNEL_CLIP.fullmatch(path):
             return "twitch", "clip", m.group("id")
         if path != "/" and _TWITCH_CHANNEL.fullmatch(path) and path.lower() not in {"/videos", "/directory", "/search", "/settings"}:
-            raise ValueError(LIVE_MESSAGE)
+            return "twitch", "live", path.lstrip("/")
         raise ValueError(TWITCH_UNSUPPORTED_MESSAGE)
     if host == "clips.twitch.tv":
         if m := _TWITCH_CLIP.fullmatch(path):
@@ -193,7 +193,7 @@ def detect_stream_source(url: str) -> tuple[str, str, str]:
             if re.fullmatch(r"clip_[A-Za-z0-9_-]+", clip):
                 return "kick", "clip", clip
             if path.lower() not in {"/video", "/videos", "/categories", "/browse", "/search"}:
-                raise ValueError(LIVE_MESSAGE)
+                return "kick", "live", path.lstrip("/")
         raise ValueError(KICK_UNSUPPORTED_MESSAGE)
     raise ValueError(UNSUPPORTED_SOURCE_MESSAGE)
 
@@ -426,7 +426,7 @@ def _close(actual: Optional[float], expected: Optional[float]) -> bool:
 
 
 def _check_cap(duration: Optional[float], max_duration: Optional[float]) -> None:
-    if duration and max_duration and duration > max_duration:
+    if duration and max_duration and max_duration > 0 and duration > max_duration:
         raise StreamTooLongError(
             f"Video is too long ({int(duration) // 60} min). "
             f"Maximum allowed duration is {int(max_duration) // 60} minutes."
@@ -1161,6 +1161,20 @@ def fetch_stream_info(url: str, *, deadline_seconds: float = PREFLIGHT_DEADLINE_
     instead of running the actor again. parsebird never runs here.
     """
     source, kind, source_id = detect_stream_source(url)
+    if kind == "live":
+        try:
+            from .media.live_stream import probe_live_stream_info, DEFAULT_LIVE_CAPTURE_SECONDS
+            live_info = probe_live_stream_info(url, timeout_seconds=deadline_seconds)
+            return {
+                "id": source_id,
+                "title": live_info.get("title") or f"{source.title()} Live: {source_id}",
+                "duration": float(DEFAULT_LIVE_CAPTURE_SECONDS),
+                "provider": "direct",
+                "is_live": True,
+            }
+        except Exception as exc:
+            raise StreamSourceError(str(exc)) from exc
+
     host = _url_host(url)
     deadline = time.monotonic() + deadline_seconds
     failures: list[str] = []

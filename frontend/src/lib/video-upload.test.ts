@@ -89,16 +89,16 @@ describe("supported video source URLs", () => {
     "https://m.youtube.com/watch?v=ai1gIWacf0I",
     "https://music.youtube.com/watch?v=ai1gIWacf0I",
     "https://youtu.be/ai1gIWacf0I?t=3",
-    "https://www.youtube.com/live/ai1gIWacf0I",
     "https://www.youtube.com/embed/ai1gIWacf0I",
   ])("accepts YouTube link %s", (url) => expect(validateVideoSourceUrl(url)).toEqual({ source: "youtube" }));
+  it("accepts YouTube live link", () => expect(validateVideoSourceUrl("https://www.youtube.com/live/ai1gIWacf0I")).toEqual({ source: "youtube", isLive: true }));
   it("rejects a YouTube page that is not a video", () => expect(validateVideoSourceUrl("https://www.youtube.com/@creator").error).toBe("Enter a valid YouTube video URL."));
-  it.each(["https://twitch.tv/creator", "https://kick.com/creator"])("rejects live URL %s", (url) => expect(validateVideoSourceUrl(url).error).toContain("Live streams aren't supported"));
+  it.each([["https://twitch.tv/creator", "twitch"], ["https://kick.com/creator", "kick"]])("accepts live channel %s", (url, source) => expect(validateVideoSourceUrl(url)).toEqual({ source, isLive: true }));
   it.each([
-    ["https://www.twitch.tv/videos", "Enter a valid Twitch VOD or clip URL."],
-    ["https://www.twitch.tv/creator/videos", "Enter a valid Twitch VOD or clip URL."],
-    ["https://kick.com/creator/about", "Enter a valid Kick VOD or clip URL."],
-    ["https://kick.com/video/not-a-uuid", "Enter a valid Kick VOD or clip URL."],
+    ["https://www.twitch.tv/videos", "Enter a valid Twitch URL."],
+    ["https://www.twitch.tv/creator/videos", "Enter a valid Twitch URL."],
+    ["https://kick.com/creator/about", "Enter a valid Kick URL."],
+    ["https://kick.com/video/not-a-uuid", "Enter a valid Kick URL."],
   ])("gives an unsupported-URL message for %s", (url, message) => expect(validateVideoSourceUrl(url).error).toBe(message));
 });
 

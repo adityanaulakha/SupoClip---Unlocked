@@ -370,15 +370,29 @@ async def test_stream_plan_cap_still_applies(monkeypatch, creation):
 
 
 @pytest.mark.asyncio
-async def test_twitch_channel_link_is_rejected_before_any_metadata_call(monkeypatch, creation):
+async def test_twitch_channel_link_is_accepted_as_live_stream(monkeypatch, creation):
     creation.body["source"]["url"] = "https://www.twitch.tv/somechannel"
-    fetch = Mock()
-    monkeypatch.setattr(tasks, "fetch_stream_info", fetch)
+    monkeypatch.setattr(
+        tasks,
+        "fetch_stream_info",
+        stream_info(returns={"id": "somechannel", "title": "Live Show", "duration": 900.0, "is_live": True}),
+    )
+    response = await tasks.create_task(creation.request, db=None)
+    assert response["task_id"] == "task-1"
+
+
+@pytest.mark.asyncio
+async def test_offline_twitch_channel_is_rejected(monkeypatch, creation):
+    creation.body["source"]["url"] = "https://www.twitch.tv/somechannel"
+    monkeypatch.setattr(
+        tasks,
+        "fetch_stream_info",
+        stream_info(raises=stream_source.StreamSourceError("This live stream is currently offline.")),
+    )
     with pytest.raises(HTTPException) as error:
         await tasks.create_task(creation.request, db=None)
     assert error.value.status_code == 422
-    fetch.assert_not_called()
-    assert_nothing_charged(creation)
+    assert "offline" in error.value.detail["message"].lower()
 
 
 @pytest.mark.asyncio

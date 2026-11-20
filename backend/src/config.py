@@ -19,6 +19,7 @@ class Config:
         self.anthropic_api_key = self._get_runtime_setting("ANTHROPIC_API_KEY")
         self.google_api_key = self._get_runtime_setting("GOOGLE_API_KEY")
         self.youtube_data_api_key = self._get_runtime_setting("YOUTUBE_DATA_API_KEY")
+        self.youtube_cookies_file = os.getenv("YOUTUBE_COOKIES_FILE") or os.getenv("YOUTUBE_COOKIES_PATH")
         self.ollama_base_url = self._get_runtime_setting("OLLAMA_BASE_URL")
         self.ollama_api_key = self._get_runtime_setting("OLLAMA_API_KEY")
 

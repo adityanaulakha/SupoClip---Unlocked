@@ -4,6 +4,10 @@ What changed in SupoClip for people using the product. Newest dates are first.
 
 Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
 
+## 2026-11-20
+
+- **New:** Live stream clipping mode: paste any active live stream from YouTube, Twitch, or Kick to capture and generate clips with AI highlight detection, 9:16 vertical reframing, and animated subtitles. Choose from 5 to 60 minute recording windows with zero billing gates in free and self-hosted mode. ([#436](https://github.com/FujiwaraChoki/supoclip/pull/436))
+
 ## 2026-11-18
 
 - **Under the hood:** Every feedback message, bug report, sales question and cancellation reason now also reaches the team's assistant chat, alongside Discord, with the same retries. Admins see it in the webhook list and can switch it off or test it. ([#435](https://github.com/FujiwaraChoki/supoclip/pull/435))

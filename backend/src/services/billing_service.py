@@ -196,11 +196,12 @@ class BillingService:
 
     async def get_usage_summary(self, user_id: str) -> dict[str, Any]:
         if not self.config.monetization_enabled:
+            duration_cap = self.config.max_video_duration if self.config.max_video_duration > 0 else 0
             return {
                 "monetization_enabled": False,
                 "plan": "self_host",
-                "max_youtube_duration_seconds": self.config.max_video_duration,
-                "max_upload_duration_seconds": self.config.max_video_duration,
+                "max_youtube_duration_seconds": duration_cap,
+                "max_upload_duration_seconds": duration_cap,
                 "max_upload_bytes": self.config.max_video_upload_bytes,
                 "subscription_status": "inactive",
                 "subscription_provider": None,

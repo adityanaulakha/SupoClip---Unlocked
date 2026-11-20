@@ -1342,6 +1342,8 @@ class VideoService:
         plan_cache: Optional[PlanCache] = None,
         outline_cache_key: Optional[str] = None,
         cleanup_settings: Optional[Dict[str, Any]] = None,
+        is_live: bool = False,
+        live_duration_seconds: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Complete video processing pipeline.
@@ -1379,7 +1381,23 @@ class VideoService:
             if progress_callback:
                 await progress_callback(10, "Downloading video...", "processing")
 
-            if source_type == "youtube":
+            if is_live:
+                from ..media.live_stream import capture_live_stream, DEFAULT_LIVE_CAPTURE_SECONDS
+                duration_to_record = live_duration_seconds or DEFAULT_LIVE_CAPTURE_SECONDS
+                if progress_callback:
+                    mins = max(1, duration_to_record // 60)
+                    await progress_callback(10, f"Recording live stream ({mins} min window)...", "processing")
+                downloads_dir = Path(runtime_config.temp_dir) / "downloads"
+                downloads_dir.mkdir(parents=True, exist_ok=True)
+                live_output = downloads_dir / f"live_{task_id or uuid.uuid4().hex[:8]}.mp4"
+                video_path = await run_in_thread(
+                    capture_live_stream,
+                    url,
+                    live_output,
+                    duration_to_record,
+                )
+                audio_first = False
+            elif source_type == "youtube":
                 job_budget = ByteBudget(
                     getattr(runtime_config, "youtube_download_max_bytes", 2_000_000_000)
                 )
@@ -1405,7 +1423,7 @@ class VideoService:
                 if video_info:
                     duration = video_info.get("duration", 0)
                     source_duration = duration or None
-                    if duration and duration > duration_limit:
+                    if duration and duration_limit and duration_limit > 0 and duration > duration_limit:
                         mins = duration_limit // 60
                         raise Exception(
                             f"Video is too long ({duration // 60} min). "
@@ -1492,7 +1510,7 @@ class VideoService:
 
             # Post-download duration guard (catches cases where preflight info was unavailable)
             file_duration = VideoService._get_file_duration(video_path)
-            if file_duration and file_duration > duration_limit:
+            if file_duration and duration_limit and duration_limit > 0 and file_duration > duration_limit:
                 mins = duration_limit // 60
                 raise Exception(
                     f"Video is too long ({int(file_duration) // 60} min). "

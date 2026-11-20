@@ -209,10 +209,12 @@ def test_detect_stream_source(url, expected):
     assert subject.detect_stream_source(url) == expected
 
 
-@pytest.mark.parametrize("url", ["https://twitch.tv/creator", "https://kick.com/creator"])
-def test_live_channel_urls_are_rejected_as_live(url):
-    with pytest.raises(ValueError, match="Live streams aren't supported"):
-        subject.detect_stream_source(url)
+@pytest.mark.parametrize(("url", "expected"), [
+    ("https://twitch.tv/creator", ("twitch", "live", "creator")),
+    ("https://kick.com/creator", ("kick", "live", "creator")),
+])
+def test_live_channel_urls_are_detected_as_live(url, expected):
+    assert subject.detect_stream_source(url) == expected
 
 
 @pytest.mark.parametrize(("url", "message"), [

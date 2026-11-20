@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import {
   AlertCircle, ArrowRight, ArrowUp, Captions, CaptionsOff, Check, ChevronDown, Clapperboard, Crop, FileVideo, SlidersHorizontal,
-  Info, ListOrdered, Loader2, MessageSquareText, Timer, Paperclip, Sparkles, Target, Upload, Link2, Wand2, X,
+  Info, ListOrdered, Loader2, MessageSquareText, Radio, Timer, Paperclip, Sparkles, Target, Upload, Link2, Wand2, X,
 } from "lucide-react";
 import { CaptionSizeControl } from "@/components/caption-size-control";
 import { ComposerSettings } from "@/components/composer-settings";
@@ -242,8 +242,12 @@ export default function HomeApp() {
     setUpgradeReason(reason);
   }, []);
   const youtubeThumbnailUrl = sourceType === "youtube" ? getYouTubeThumbnailUrl(url) : null;
-  // Brand mark of the pasted link; a neutral link icon until it is recognised.
-  const urlSource = url.trim() ? validateVideoSourceUrl(url).source : undefined;
+  const urlValidation = useMemo(() => (url.trim() ? validateVideoSourceUrl(url) : {}), [url]);
+  const urlSource = urlValidation.source;
+  const isLiveDetected = Boolean(urlValidation.isLive);
+  const [isLiveEnabled, setIsLiveEnabled] = useState(false);
+  const effectiveIsLive = isLiveDetected || isLiveEnabled;
+  const [liveDurationMinutes, setLiveDurationMinutes] = useState(15);
   const uploadLimitBytes = billingSummary?.max_upload_bytes && billingSummary.max_upload_bytes > 0
     ? billingSummary.max_upload_bytes
     : maxVideoUploadBytes();
@@ -771,7 +775,12 @@ export default function HomeApp() {
       }
 
       const request: Record<string, unknown> = {
-        source: { url: videoUrl, title: sourceType === "upload" && file?.name ? file.name.slice(0, 500) : null },
+        source: {
+          url: videoUrl,
+          title: sourceType === "upload" && file?.name ? file.name.slice(0, 500) : null,
+          is_live: effectiveIsLive,
+          live_duration_seconds: effectiveIsLive ? liveDurationMinutes * 60 : undefined,
+        },
         font_options: fontOptions,
         caption_template: captionTemplate,
         processing_mode: "fast",
@@ -795,7 +804,13 @@ export default function HomeApp() {
       if (Object.keys(options).length > 0) request.workflow_options = options;
       if (sentInstructions) request.instructions = sentInstructions;
 
-      setStatusMessage(sourceType === "youtube" ? t("status.checkingLength") : t("status.starting"));
+      setStatusMessage(
+        effectiveIsLive
+          ? "Connecting to live stream..."
+          : sourceType === "youtube"
+            ? t("status.checkingLength")
+            : t("status.starting")
+      );
       const startResponse = await fetch("/api/tasks/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1082,10 +1097,69 @@ export default function HomeApp() {
               </div>
             )}
 
+            {effectiveIsLive && !file && (
+              <div className="mx-3 mb-3 rounded-xl border border-red-500/30 bg-red-500/5 p-3 sm:mx-4 sm:p-3.5">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="relative flex size-2.5">
+                      <span className="absolute inline-flex size-full animate-ping rounded-full bg-red-400 opacity-75" />
+                      <span className="relative inline-flex size-2.5 rounded-full bg-red-500" />
+                    </span>
+                    <span className="text-sm font-semibold text-red-600 dark:text-red-400">
+                      Live Stream Mode
+                    </span>
+                    <span className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                      Auto-record &amp; clip
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">Duration:</span>
+                    <div className="flex items-center gap-1">
+                      {[5, 10, 15, 30, 45, 60].map((mins) => (
+                        <button
+                          key={mins}
+                          type="button"
+                          disabled={controlsDisabled}
+                          onClick={() => setLiveDurationMinutes(mins)}
+                          className={cn(
+                            "rounded-lg px-2 py-1 text-xs font-medium transition-colors",
+                            liveDurationMinutes === mins
+                              ? "bg-red-500 text-white font-semibold"
+                              : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+                          )}
+                        >
+                          {mins}m
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  SupoClip captures {liveDurationMinutes} minutes of live broadcast and automatically extracts high-engagement vertical clips with AI highlights, framing, and captions.
+                </p>
+              </div>
+            )}
+
             <div className="flex items-center gap-1 px-3 pb-3 sm:px-4">
               {!file && (
                 <Chip onClick={() => fileInputRef.current?.click()} disabled={controlsDisabled} aria-label={t("uploadFile")} aria-describedby="source-limits">
                   <Paperclip className="size-3.5" /><span className="hidden sm:inline">{t("upload")}</span>
+                </Chip>
+              )}
+
+              {!file && (
+                <Chip
+                  type="button"
+                  data-testid="live-stream-toggle"
+                  onClick={() => setIsLiveEnabled((current) => !current)}
+                  disabled={controlsDisabled}
+                  active={effectiveIsLive}
+                  aria-pressed={effectiveIsLive}
+                  title="Toggle live stream clipping mode"
+                  className={cn(effectiveIsLive && "border-red-500/40 text-red-600 dark:text-red-400 font-medium")}
+                >
+                  <Radio className={cn("size-3.5", effectiveIsLive && "text-red-500 animate-pulse")} />
+                  <span>{effectiveIsLive ? `Live (${liveDurationMinutes}m)` : "Live stream"}</span>
                 </Chip>
               )}
 

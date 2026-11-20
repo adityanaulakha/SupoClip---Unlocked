@@ -30,8 +30,10 @@ from .youtube_proxy import (
     download_full_with_proxy,
     extract_video_info_with_proxy,
     extract_video_info,
+    YouTubeAgeRestrictedError,
     YouTubeDownloadError,
     YouTubeGeoRestrictedError,
+    is_age_restricted_error,
     is_geo_restricted_error,
     log_youtube_attempt,
     proxy_configured,
@@ -49,6 +51,22 @@ YOUTUBE_DOWNLOAD_PROVIDER_YTDLP = "yt_dlp"
 YOUTUBE_DOWNLOAD_PROVIDER_APIFY = "apify"
 YOUTUBE_DOWNLOAD_PROVIDER_RAPIDAPI = "rapidapi"
 YOUTUBE_DATA_API_URL = "https://www.googleapis.com/youtube/v3/videos"
+
+
+def _resolve_cookies_file() -> Optional[str]:
+    config = get_config()
+    custom = getattr(config, "youtube_cookies_file", None)
+    if custom and Path(custom).is_file():
+        return str(custom)
+    for candidate in [
+        Path(config.temp_dir).parent / "cookies.txt",
+        Path("/app/cookies.txt"),
+        Path("/app/src/cookies.txt"),
+        Path(__file__).parent.parent / "cookies.txt",
+    ]:
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 class YouTubeDownloader:
@@ -107,6 +125,10 @@ class YouTubeDownloader:
             "age_limit": None,
         }
 
+        cookies_file = _resolve_cookies_file()
+        if cookies_file:
+            opts["cookiefile"] = cookies_file
+
         return opts
 
 
@@ -128,6 +150,9 @@ def _build_info_options(task_id: Optional[str] = None) -> Dict[str, Any]:
         },
         "nocheckcertificate": True,
     }
+    cookies_file = _resolve_cookies_file()
+    if cookies_file:
+        ydl_opts["cookiefile"] = cookies_file
     if proxy_configured():
         # Metadata must leave through the same proxy as the media, or YouTube
         # bot-checks the server IP before a download starts. No player client
@@ -470,6 +495,7 @@ def get_youtube_video_info(
     providers = [primary_provider, secondary_provider]
     last_error: Optional[Exception] = None
     geo_error: Optional[Exception] = None
+    age_error: Optional[Exception] = None
     # A result without a usable length. The other provider gets one try
     # (same deadline) before this is returned and the caller fails closed.
     incomplete: Optional[Dict[str, Any]] = None
@@ -523,6 +549,8 @@ def get_youtube_video_info(
             last_error = exc
             if is_geo_restricted_error(exc):
                 geo_error = exc
+            if is_age_restricted_error(exc):
+                age_error = exc
             if index == 0:
                 logger.warning(
                     "Primary YouTube metadata provider %s failed for %s: %s. Trying %s.",
@@ -539,7 +567,7 @@ def get_youtube_video_info(
                     exc,
                 )
 
-    if incomplete is not None and geo_error is None:
+    if incomplete is not None and geo_error is None and age_error is None:
         return incomplete
     if last_error:
         logger.warning("YouTube video info fetch failed for %s: %s", video_id, last_error)
@@ -549,6 +577,8 @@ def get_youtube_video_info(
         raise TimeoutError("YouTube metadata deadline exceeded") from last_error
     if geo_error is not None:
         raise YouTubeGeoRestrictedError() from geo_error
+    if age_error is not None:
+        raise YouTubeAgeRestrictedError() from age_error
     return None
 
 

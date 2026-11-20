@@ -32,6 +32,8 @@ async def process_video_task(
     add_subtitles: bool = True,
     cleanup_settings: Dict[str, Any] | None = None,
     clip_length: str = "auto",
+    is_live: bool = False,
+    live_duration_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Background worker task to process a video.
@@ -83,6 +85,8 @@ async def process_video_task(
         add_subtitles,
         cleanup_settings,
         clip_length,
+        is_live,
+        live_duration_seconds,
     )
 
     # Create progress tracker
@@ -90,6 +94,18 @@ async def process_video_task(
 
     async with AsyncSessionLocal() as db:
         await load_runtime_settings_cache(db)
+        task_service = TaskService(db)
+        if not is_live:
+            try:
+                task_record = await task_service.get_task(task_id, user_id)
+                if task_record and task_record.get("source_metadata"):
+                    s_meta = task_record["source_metadata"]
+                    if s_meta.get("is_live"):
+                        is_live = True
+                        live_duration_seconds = live_duration_seconds or s_meta.get("live_duration_seconds")
+            except Exception as exc:
+                logger.warning("Could not check task source_metadata for live stream info: %s", exc)
+
         decision = await admit_video_job(
             ctx, db, task_id=task_id, user_id=user_id, job_args=job_args, url=url
         )
@@ -154,6 +170,8 @@ async def process_video_task(
                 clip_ready_callback=clip_ready_callback,
                 cleanup_settings=cleanup_settings,
                 clip_length=clip_length,
+                is_live=is_live,
+                live_duration_seconds=live_duration_seconds,
             )
 
             logger.info(f"Task {task_id} completed successfully")

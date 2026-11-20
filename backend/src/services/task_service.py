@@ -501,6 +501,8 @@ class TaskService(ClipEditingMixin):
         clip_ready_callback: Optional[Callable] = None,
         cleanup_settings: Optional[Dict[str, Any]] = None,
         clip_length: str = "auto",
+        is_live: bool = False,
+        live_duration_seconds: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Process a task: download video, analyze, create clips.
@@ -530,6 +532,11 @@ class TaskService(ClipEditingMixin):
             # What to make is read from the task, so queued jobs and resumes
             # honour it with the ARQ job arguments unchanged.
             task_row = await self.task_repo.get_task_by_id(self.db, task_id) or {}
+            task_meta = (task_row or {}).get("source_metadata") or {}
+            if not is_live and task_meta.get("is_live"):
+                is_live = True
+            if not live_duration_seconds and task_meta.get("live_duration_seconds"):
+                live_duration_seconds = task_meta.get("live_duration_seconds")
             spec = workflow_spec_from_task(task_row, clip_length)
             prior_outputs = bool(await self.clip_repo.get_clips_by_task(self.db, task_id))
             # New tasks already have an atomic acceptance charge. Recover queued
@@ -684,6 +691,8 @@ class TaskService(ClipEditingMixin):
                 clip_length=clip_length,
                 checkpoint=checkpoint,
                 checkpoint_callback=save_checkpoint,
+                is_live=is_live,
+                live_duration_seconds=live_duration_seconds,
                 **workflow_kwargs,
             )
             stage_timings["pipeline_seconds"] = round(

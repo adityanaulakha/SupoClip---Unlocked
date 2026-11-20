@@ -110,7 +110,12 @@ def _duration_unavailable_error(platform: str) -> HTTPException:
     )
 
 
-async def _preflight_youtube_source(url: str, duration_limit: int) -> Dict[str, Any]:
+async def _preflight_youtube_source(
+    url: str,
+    duration_limit: int,
+    is_live: bool = False,
+    live_duration_seconds: int = 900,
+) -> Dict[str, Any]:
     """Check duration before creating a task or consuming a generation."""
     # wait_for cancels the awaiting task when this elapses. A yt-dlp call already
     # running inside asyncio.to_thread can finish in the background.
@@ -124,9 +129,15 @@ async def _preflight_youtube_source(url: str, duration_limit: int) -> Dict[str, 
             raise ValueError("No metadata provider answered")
         if metadata.get("age_restricted"):
             raise YouTubeAgeRestrictedError()
-        if not has_verified_duration(metadata):
+        detected_live = bool(metadata.get("is_live") or metadata.get("live_status") in {"is_live", "post_live"})
+        if is_live or detected_live:
+            metadata["is_live"] = True
+            metadata["duration"] = float(live_duration_seconds)
+            duration = float(live_duration_seconds)
+        elif not has_verified_duration(metadata):
             raise _DurationUnavailable()
-        duration = metadata["duration"]
+        else:
+            duration = metadata["duration"]
     except _DurationUnavailable:
         raise _duration_unavailable_error("YouTube") from None
     except YouTubeGeoRestrictedError as exc:
@@ -172,7 +183,7 @@ async def _preflight_youtube_source(url: str, duration_limit: int) -> Dict[str, 
             },
         ) from None
 
-    if duration > duration_limit:
+    if duration_limit and duration_limit > 0 and duration > duration_limit:
         raise HTTPException(
             status_code=422,
             detail={
@@ -188,7 +199,13 @@ async def _preflight_youtube_source(url: str, duration_limit: int) -> Dict[str, 
         )
     return metadata
 
-async def _preflight_stream_source(url: str, source: str, duration_limit: int) -> Dict[str, Any]:
+async def _preflight_stream_source(
+    url: str,
+    source: str,
+    duration_limit: int,
+    is_live: bool = False,
+    live_duration_seconds: int = 900,
+) -> Dict[str, Any]:
     try:
         # One overall deadline: yt-dlp (proxy, direct) metadata, then the cheap
         # metadata actor only when both fail. The full-video actor never runs
@@ -197,16 +214,25 @@ async def _preflight_stream_source(url: str, source: str, duration_limit: int) -
             run_in_thread(fetch_stream_info, url, deadline_seconds=STREAM_PREFLIGHT_DEADLINE_SECONDS),
             timeout=STREAM_PREFLIGHT_DEADLINE_SECONDS + 5,
         )
-        if not has_verified_duration(metadata):
-            raise _DurationUnavailable()
-        duration = metadata["duration"]
+        if metadata.get("is_live"):
+            metadata["duration"] = float(live_duration_seconds)
+            duration = float(live_duration_seconds)
+        elif not has_verified_duration(metadata):
+            if is_live:
+                metadata["is_live"] = True
+                metadata["duration"] = float(live_duration_seconds)
+                duration = float(live_duration_seconds)
+            else:
+                raise _DurationUnavailable()
+        else:
+            duration = metadata["duration"]
     except (StreamDurationUnavailableError, _DurationUnavailable):
         raise _duration_unavailable_error(source.title()) from None
     except StreamSourceError as exc:
         raise HTTPException(status_code=422, detail={"code": "VIDEO_UNAVAILABLE", "message": str(exc)}) from None
     except Exception:
         raise HTTPException(status_code=503, detail={"code": "VIDEO_METADATA_UNAVAILABLE", "message": "We couldn't fetch this video, try again later. No minutes were used."}) from None
-    if duration > duration_limit:
+    if duration_limit and duration_limit > 0 and duration > duration_limit:
         raise HTTPException(status_code=422, detail={"code": "VIDEO_TOO_LONG", "message": f"This {source.title()} video is {duration / 60:.1f} minutes long. Your plan allows videos up to {duration_limit / 60:g} minutes. Choose a shorter VOD or clip. No minutes were used.", "duration_seconds": duration, "max_duration_seconds": duration_limit})
     return metadata
 
@@ -249,7 +275,7 @@ async def _preflight_upload_source(url: str, user_id: str, duration_limit: int, 
             },
         ) from None
 
-    if duration > duration_limit:
+    if duration_limit and duration_limit > 0 and duration > duration_limit:
         raise HTTPException(
             status_code=422,
             detail={
@@ -758,15 +784,30 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
             raw_source["url"] = canonical_youtube_url(raw_source["url"]) or raw_source["url"]
         source_title = raw_source.get("title")
         stream_metadata: Dict[str, Any] | None = None
+        is_live = bool(raw_source.get("is_live"))
+        live_duration_seconds = int(raw_source.get("live_duration_seconds") or 900)
+        live_duration_seconds = max(60, min(7200, live_duration_seconds))
+
         if source_type == "youtube":
             metadata = await _preflight_youtube_source(
-                raw_source["url"], billing["max_youtube_duration_seconds"]
+                raw_source["url"],
+                billing["max_youtube_duration_seconds"],
+                is_live=is_live,
+                live_duration_seconds=live_duration_seconds,
             )
-            source_title = source_title or metadata.get("title") or "YouTube Video"
+            is_live = is_live or bool(metadata.get("is_live"))
+            source_title = source_title or metadata.get("title") or ("YouTube Live" if is_live else "YouTube Video")
             duration_seconds = float(metadata["duration"])
         elif source_type in {"twitch", "kick"}:
-            stream_metadata = await _preflight_stream_source(raw_source["url"], source_type, billing["max_youtube_duration_seconds"])
-            source_title = source_title or stream_metadata.get("title") or f"{source_type.title()} Video"
+            stream_metadata = await _preflight_stream_source(
+                raw_source["url"],
+                source_type,
+                billing["max_youtube_duration_seconds"],
+                is_live=is_live,
+                live_duration_seconds=live_duration_seconds,
+            )
+            is_live = is_live or bool(stream_metadata.get("is_live"))
+            source_title = source_title or stream_metadata.get("title") or f"{source_type.title()} {'Live' if is_live else 'Video'}"
             duration_seconds = float(stream_metadata["duration"])
         else:
             if await foreign_upload(db, raw_source["url"], user_id):
@@ -839,6 +880,8 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
                             "processing_job_id": processing_job_id,
                             "clip_length": clip_length,
                             "enqueued_at": datetime.now(timezone.utc).isoformat(),
+                            "is_live": is_live,
+                            "live_duration_seconds": live_duration_seconds if is_live else None,
                             **({"source_key": source_key} if source_key else {}),
                             **_stream_resolution_metadata(stream_metadata),
                         },
@@ -869,6 +912,8 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
                     add_subtitles,
                     cleanup_settings,
                     clip_length,
+                    is_live=is_live,
+                    live_duration_seconds=live_duration_seconds if is_live else None,
                     _job_id=processing_job_id,
                 )
 
@@ -1808,6 +1853,8 @@ async def resume_task(
                     processing_job_id = f"{task_id}:{secrets.token_hex(16)}"
                     metadata["processing_job_id"] = processing_job_id
                     await _save_task_source_metadata(task_id, metadata, db=db)
+                    is_live = bool(metadata.get("is_live"))
+                    live_duration_seconds = metadata.get("live_duration_seconds")
                     job_id = await JobQueue.enqueue_processing_job(
                         "process_video_task",
                         processing_mode,
@@ -1824,6 +1871,8 @@ async def resume_task(
                         add_subtitles,
                         cleanup_settings,
                         normalize_clip_length(metadata.get("clip_length")),
+                        is_live,
+                        live_duration_seconds,
                         _job_id=processing_job_id,
                     )
                 except Exception:
